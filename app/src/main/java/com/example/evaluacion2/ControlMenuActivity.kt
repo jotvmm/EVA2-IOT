@@ -3,117 +3,175 @@ package com.example.evaluacion2
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-
-// -- NUEVAS IMPORTACIONES EXPLÍCITAS Y CORREGIDAS --
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
-// --------------------------------------------------
+import androidx.core.content.ContextCompat
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.PrintWriter
+import java.net.Socket
+import kotlin.concurrent.thread
 
 class ControlMenuActivity : AppCompatActivity() {
 
+    // --- CONFIGURACIÓN DE CONEXIÓN ---
+    private val SERVER_PORT = 5000  // Puerto del servidor
+    private lateinit var etServerIP: EditText  // Campo para ingresar IP
+
+    private var socket: Socket? = null
+    private var writer: PrintWriter? = null
+    private var reader: BufferedReader? = null
+    private var isConnected = false
+    // -----------------------------------
+
+    // UI
     private lateinit var tvStatus: TextView
-    private lateinit var btnToggle1: Button // ACTIVAR SISTEMA
-    private lateinit var btnToggle2: Button // DESACTIVAR SISTEMA
-
-    // Instancia de Firestore (Ahora usa el KTX/Firebase explícito)
-    private val db: FirebaseFirestore = Firebase.firestore
-
-    // Referencia al documento que la placa leerá
-    private val controlDocRef = db.collection("control_dispositivos").document("sistema_retroceso")
-
-    // Listener para monitorear el estado actual del sistema
-    private var statusListener: ListenerRegistration? = null
+    private lateinit var btnConnect: Button
+    private lateinit var btnDisconnect: Button
+    private lateinit var btnToggle1: Button
+    private lateinit var btnToggle2: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_control_menu)
 
-        // Inicialización de las vistas
+        // Vistas
         tvStatus = findViewById(R.id.tv_status)
+        btnConnect = findViewById(R.id.btn_connect)
+        btnDisconnect = findViewById(R.id.btn_disconnect)
         btnToggle1 = findViewById(R.id.toggle_btn)
         btnToggle2 = findViewById(R.id.toggle2_btn)
+        etServerIP = findViewById(R.id.et_server_ip) // agrega este EditText en tu XML
 
-        // En el modo WiFi/Firestore, siempre estamos "conectados" a la nube.
-        setCommandButtonsEnabled(true)
-        tvStatus.text = "Estado: Conectado a Firebase"
-
-        // Configurar Listeners de botones
-        btnToggle1.setOnClickListener {
-            sendCommandToFirestore(1, "ACTIVAR") // Comando para ACTIVAR SISTEMA (estado 1)
+        btnConnect.setOnClickListener {
+            val ip = etServerIP.text.toString().trim()
+            if (ip.isEmpty()) {
+                showToast("Ingrese la IP del servidor")
+            } else {
+                connectToServer(ip)
+            }
         }
 
-        btnToggle2.setOnClickListener {
-            sendCommandToFirestore(0, "DESACTIVAR") // Comando para DESACTIVAR SISTEMA (estado 0)
-        }
+        btnDisconnect.setOnClickListener { disconnect() }
 
-        // Iniciar la escucha del estado del sistema
-        startStatusListener()
+        btnToggle1.setOnClickListener { sendCommand("1") }
+        btnToggle2.setOnClickListener { sendCommand("0") }
+
+        updateUiState(false)
     }
 
-    // Función para escribir el comando (estado 1 o 0) en Firestore
-    private fun sendCommandToFirestore(command: Int, action: String) {
-        val data = hashMapOf(
-            "estado" to command,
-            "timestamp" to System.currentTimeMillis()
+    // --- CONEXIÓN TCP ---
+    private fun connectToServer(ip: String) {
+        if (isConnected) {
+            showToast("Ya está conectado")
+            return
+        }
+
+        tvStatus.text = "Estado: Conectando..."
+        setConnectionButtonsEnabled(false)
+
+        thread {
+            try {
+                socket = Socket(ip, SERVER_PORT)
+                writer = PrintWriter(socket!!.getOutputStream(), true)
+                reader = BufferedReader(InputStreamReader(socket!!.getInputStream()))
+                isConnected = true
+
+                runOnUiThread {
+                    updateUiState(true)
+                    showToast("Conectado a $ip:$SERVER_PORT")
+                }
+
+                // Escuchar respuestas del servidor
+                var line: String? = null
+                while (socket != null) {
+                    line = reader?.readLine() ?: break
+                    Log.d("WiFi", "Respuesta del servidor: $line")
+                }
+
+            } catch (e: Exception) {
+                Log.e("WiFi", "Error al conectar: ${e.message}")
+                runOnUiThread {
+                    tvStatus.text = "Estado: Error de conexión"
+                    showToast("No se pudo conectar. Verifique IP o red Wi-Fi.")
+                    updateUiState(false)
+                }
+                disconnect()
+            }
+        }
+    }
+
+    private fun disconnect() {
+        thread {
+            try {
+                writer?.close()
+                reader?.close()
+                socket?.close()
+            } catch (e: Exception) {
+                Log.e("WiFi", "Error al cerrar socket: ${e.message}")
+            } finally {
+                writer = null
+                reader = null
+                socket = null
+                isConnected = false
+                runOnUiThread {
+                    updateUiState(false)
+                    showToast("Desconectado.")
+                }
+            }
+        }
+    }
+
+    // --- ENVÍO DE DATOS ---
+    private fun sendCommand(cmd: String) {
+        if (!isConnected || writer == null) {
+            showToast("No hay conexión activa.")
+            return
+        }
+
+        thread {
+            try {
+                writer!!.println(cmd)
+                runOnUiThread { showToast("Comando '$cmd' enviado.") }
+            } catch (e: Exception) {
+                Log.e("WiFi", "Error al enviar: ${e.message}")
+                runOnUiThread { showToast("Error al enviar comando.") }
+                disconnect()
+            }
+        }
+    }
+
+    // --- UI ---
+    private fun updateUiState(connected: Boolean) {
+        isConnected = connected
+        tvStatus.text = if (connected) "Estado: CONECTADO" else "Estado: DESCONECTADO"
+        tvStatus.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (connected) android.R.color.holo_green_dark else android.R.color.holo_red_dark
+            )
         )
 
-        controlDocRef.set(data, SetOptions.merge())
-            .addOnSuccessListener {
-                Toast.makeText(this, "$action Sistema (Comando: $command) enviado a Firebase", Toast.LENGTH_SHORT).show()
-            }
-            .addOnFailureListener { e ->
-                Log.e("Firestore", "Error al escribir comando", e)
-                Toast.makeText(this, "ERROR: Fallo al enviar el comando a Firebase.", Toast.LENGTH_LONG).show()
-            }
+        btnConnect.isEnabled = !connected
+        btnDisconnect.isEnabled = connected
+        btnToggle1.isEnabled = connected
+        btnToggle2.isEnabled = connected
+        setConnectionButtonsEnabled(true)
     }
 
-    // Función para leer el estado de la base de datos en tiempo real (para feedback visual)
-    private fun startStatusListener() {
-        statusListener = controlDocRef.addSnapshotListener { snapshot, e ->
-            if (e != null) {
-                Log.w("Firestore", "Escucha de estado fallida.", e)
-                tvStatus.text = "Error de escucha con Firebase"
-                return@addSnapshotListener
-            }
-
-            if (snapshot != null && snapshot.exists()) {
-                val estadoActual = snapshot.getLong("estado")?.toInt()
-
-                if (estadoActual == 1) {
-                    tvStatus.text = "Estado: Sistema ACTIVO (Remoto)"
-                    btnToggle1.isEnabled = false
-                    btnToggle2.isEnabled = true
-                } else if (estadoActual == 0) {
-                    tvStatus.text = "Estado: Sistema DESACTIVADO (Remoto)"
-                    btnToggle1.isEnabled = true
-                    btnToggle2.isEnabled = false
-                } else {
-                    tvStatus.text = "Estado: En espera de comando"
-                    btnToggle1.isEnabled = true
-                    btnToggle2.isEnabled = true
-                }
-            } else {
-                // Si el documento no existe (primera vez), lo creamos con el estado 0
-                val initialData = hashMapOf("estado" to 0)
-                controlDocRef.set(initialData)
-                tvStatus.text = "Estado: Documento creado, DESACTIVADO"
-            }
-        }
+    private fun setConnectionButtonsEnabled(enabled: Boolean) {
+        btnConnect.isEnabled = enabled && !isConnected
+        btnDisconnect.isEnabled = enabled && isConnected
     }
 
-    private fun setCommandButtonsEnabled(isEnabled: Boolean) {
-        btnToggle1.isEnabled = isEnabled
-        btnToggle2.isEnabled = isEnabled
+    private fun showToast(msg: String) {
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        statusListener?.remove()
+        disconnect()
     }
 }

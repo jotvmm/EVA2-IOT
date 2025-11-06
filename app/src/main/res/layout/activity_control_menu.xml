@@ -35,6 +35,15 @@
             android:paddingBottom="30dp"
             android:textStyle="bold"/>
 
+        <EditText
+            android:gravity="center"
+            android:textColor="#FFFFF"
+            android:id="@+id/et_server_ip"
+            android:hint="IP del servidor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"/>
+
+
         <!-- BOTÓN DE CONEXIÓN -->
         <Button
             android:id="@+id/btn_connect"
